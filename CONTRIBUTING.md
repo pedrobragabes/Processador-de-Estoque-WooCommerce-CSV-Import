@@ -331,6 +331,3 @@ Contribuidores serão reconhecidos em:Contribuidores serão reconhecidos em:
 
 
 **Obrigado por contribuir para tornar este projeto melhor!** 🎉---
-
-
-**[📖 English version available in docs/en/CONTRIBUTING.md](docs/en/CONTRIBUTING.md)**

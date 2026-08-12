@@ -7,7 +7,7 @@
     "start": "node processador-estoque-v4.js",
     "process": "node processador-estoque-v4.js",
     "logs": "node visualizar-logs.js",
-    "test": "echo \"No tests specified\" && exit 0"
+    "test": "node --check processador-estoque-v4.1.js && node --check visualizar-logs.js"
   },
   "keywords": [
     "athos-erp",
