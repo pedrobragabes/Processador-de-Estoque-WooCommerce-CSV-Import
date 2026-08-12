@@ -27,12 +27,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/athos-to-woocommerce.git"
+    "url": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/athos-to-woocommerce/issues"
+    "url": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import/issues"
   },
-  "homepage": "https://github.com/yourusername/athos-to-woocommerce#readme",
+  "homepage": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import#readme",
   "engines": {
     "node": ">=14.0.0",
     "npm": ">=6.0.0"
