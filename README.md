@@ -248,6 +248,12 @@ AquaFlora-Estoque/
 * Ajustar mapeamento de categorias.
 * Registrar mudanças em `CHANGELOG.md`.
 
+Antes de enviar uma alteração, valide a sintaxe dos dois executáveis:
+
+```powershell
+npm test
+```
+
 ---
 
 ## 16. Licença

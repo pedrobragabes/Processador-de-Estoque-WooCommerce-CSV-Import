@@ -7,7 +7,7 @@
     "start": "node processador-estoque-v4.js",
     "process": "node processador-estoque-v4.js",
     "logs": "node visualizar-logs.js",
-    "test": "echo \"No tests specified\" && exit 0"
+    "test": "node --check processador-estoque-v4.1.js && node --check visualizar-logs.js"
   },
   "keywords": [
     "athos-erp",
@@ -27,12 +27,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/athos-to-woocommerce.git"
+    "url": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/athos-to-woocommerce/issues"
+    "url": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import/issues"
   },
-  "homepage": "https://github.com/yourusername/athos-to-woocommerce#readme",
+  "homepage": "https://github.com/pedrobragabes/Processador-de-Estoque-WooCommerce-CSV-Import#readme",
   "engines": {
     "node": ">=14.0.0",
     "npm": ">=6.0.0"
