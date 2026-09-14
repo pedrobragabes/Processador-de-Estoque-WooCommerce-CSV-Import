@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   VISUALIZADOR DE LOGS - AquaFlora v3.0
+echo   VISUALIZADOR DE LOGS - Legacy ERP CSV Converter
 echo ============================================
 echo.
 echo 📋 Opcoes disponveis:

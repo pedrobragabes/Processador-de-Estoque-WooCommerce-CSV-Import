@@ -604,7 +604,7 @@ class ProcessadorEstoqueV4 {
     if (marca) {
       descricao += ` | Marca: ${marca}`;
     }
-    descricao += ` | Categoria: ${categoria} | AquaFlora Agroshop`;
+    descricao += ` | Categoria: ${categoria}`;
     return descricao;
   }
 
@@ -620,7 +620,7 @@ class ProcessadorEstoqueV4 {
     } else {
       intro += `Produto de alta qualidade da categoria ${categoria}. `;
     }
-    intro += `Disponível na <strong>AquaFlora Agroshop</strong> com `;
+    intro += `Disponível na loja com `;
     if (peso) {
       intro += `<strong>${peso}kg</strong> e `;
     }
@@ -645,7 +645,6 @@ class ProcessadorEstoqueV4 {
     descricao += `<div class="cta-section">\n`;
     descricao += `<p><strong>💰 Preço promocional:</strong> <span class="price">R$ ${preco}</span></p>\n`;
     descricao += `<p>📞 <strong>Dúvidas?</strong> Nossa equipe está pronta para ajudar!</p>\n`;
-    descricao += `<p>⭐ <strong>AquaFlora Agroshop</strong> - Sua loja de confiança!</p>\n`;
     descricao += `</div>\n`;
     descricao += `</div>`;
     
