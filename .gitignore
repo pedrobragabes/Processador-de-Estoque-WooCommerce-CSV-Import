@@ -58,3 +58,7 @@ coverage/
 config.local.json
 secrets/
 credentials/
+
+# Local maintenance notes are never portfolio source.
+/PORTFOLIO_REPORT.md
+/config.json

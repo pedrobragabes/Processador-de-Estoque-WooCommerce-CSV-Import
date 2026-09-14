@@ -2,10 +2,10 @@
   "name": "athos-to-woocommerce",
   "version": "4.1.0",
   "description": "Convert Athos ERP inventory CSV to WooCommerce format with automatic brand detection, weight extraction, and native brand taxonomy support",
-  "main": "processador-estoque-v4.js",
+  "main": "processador-estoque-v4.1.js",
   "scripts": {
-    "start": "node processador-estoque-v4.js",
-    "process": "node processador-estoque-v4.js",
+    "start": "node processador-estoque-v4.1.js",
+    "process": "node processador-estoque-v4.1.js",
     "logs": "node visualizar-logs.js",
     "test": "node --check processador-estoque-v4.1.js && node --check visualizar-logs.js"
   },
