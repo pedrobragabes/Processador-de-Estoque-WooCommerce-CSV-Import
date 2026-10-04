@@ -3,17 +3,47 @@ const path = require('path');
 const csv = require('csv-parser');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
-// Carrega configurações do arquivo config.json
-let CONFIG;
-try {
-  CONFIG = JSON.parse(fs.readFileSync('config.json', 'utf8'));
-} catch (error) {
-  console.error('❌ Erro ao carregar config.json:', error.message);
-  process.exit(1);
+const { randomUUID, createHash } = require('node:crypto');
+const defaults = require('./config.example.json');
+
+function carregarConfig(filename = path.resolve('config.json')) {
+  let supplied;
+  try { supplied = JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, '')); }
+  catch (error) { throw new Error(`Erro ao carregar config.json: ${error.message}`); }
+  if (!supplied || Array.isArray(supplied) || typeof supplied !== 'object') throw new Error('Configuração inválida.');
+  const config = {};
+  for (const [section, value] of Object.entries(defaults)) {
+    const extra = supplied[section];
+    if (extra !== undefined && (!extra || Array.isArray(extra) || typeof extra !== 'object')) throw new Error(`Configuração inválida: ${section}.`);
+    config[section] = { ...value, ...extra };
+  }
+  for (const key of ['entrada', 'pastaSaida']) {
+    if (typeof config.arquivos[key] !== 'string' || !config.arquivos[key].trim()) throw new Error(`Caminho inválido: ${key}.`);
+    config.arquivos[key] = path.resolve(path.dirname(filename), config.arquivos[key]);
+  }
+  for (const key of ['precoMinimo', 'estoqueMinimo']) {
+    if (!Number.isFinite(config.processamento[key]) || config.processamento[key] < 0) throw new Error(`Limite inválido: ${key}.`);
+  }
+  for (const [section, value] of Object.entries(defaults)) for (const [key, original] of Object.entries(value)) {
+    if (typeof original === 'boolean' && typeof config[section][key] !== 'boolean') throw new Error(`Opção deve ser booleana: ${section}.${key}.`);
+  }
+  return config;
 }
 
+function escaparHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+}
+function percentual(value, total) { return total ? (value / total * 100).toFixed(2) : '0.00'; }
+
 class ProcessadorEstoqueV4 {
-  constructor() {
+  constructor({ configPath = path.resolve('config.json') } = {}) {
+    this.config = carregarConfig(path.resolve(configPath));
+    this.execucaoId = `execucao_${new Date().toISOString().replace(/[:.]/g, '-')}_${randomUUID().slice(0, 8)}`;
+    this.pastaFinal = path.join(this.config.arquivos.pastaSaida, this.execucaoId);
+    this.pastaSaida = path.join(this.config.arquivos.pastaSaida, `.${this.execucaoId}.pendente`);
+    this.skus = new Set();
+    this.nomesCategoria = new Set();
+    this.linhasReconhecidas = 0;
     this.produtos = [];
     this.categorias = new Map();
     this.estatisticas = {
@@ -172,6 +202,7 @@ class ProcessadorEstoqueV4 {
       'club modiano': 'Club Modiano',
       'copag': 'Copag'
     };
+    this.marcasOrdenadas = Object.entries(this.marcasConhecidas).sort((a, b) => b[0].length - a[0].length);
   }
 
   // Inicializa o processamento
@@ -181,18 +212,21 @@ class ProcessadorEstoqueV4 {
       this.adicionarLog('INFO', 'Iniciando processamento v4.1 com detecção inteligente');
       
       this.verificarDependencias();
-      this.criarPastaSaida();
-      
       await this.lerArquivoCSV();
+      if (!this.linhasReconhecidas) throw new Error('Formato Athos não reconhecido: nenhuma linha contém o contrato esperado.');
+      if (!this.produtos.length) throw new Error('Nenhum produto válido: confira as recusas antes de exportar.');
+      this.criarPastaSaida();
       await this.gerarArquivosSaida();
       await this.gerarLogDetalhado();
       
+      fs.renameSync(this.pastaSaida, this.pastaFinal);
+      this.pastaSaida = this.pastaFinal;
+      this.publicarLogAtual();
       this.exibirRelatorioFinal();
       
     } catch (error) {
       this.adicionarLog('ERRO', `Erro crítico: ${error.message}`);
-      console.error('❌ Erro crítico:', error.message);
-      process.exit(1);
+      throw error;
     }
   }
 
@@ -215,13 +249,13 @@ class ProcessadorEstoqueV4 {
 
   // Verifica se todas as dependências estão disponíveis
   verificarDependencias() {
-    if (!fs.existsSync(CONFIG.arquivos.entrada)) {
-      throw new Error(`Arquivo de entrada não encontrado: ${CONFIG.arquivos.entrada}`);
+    if (!fs.existsSync(this.config.arquivos.entrada) || !fs.statSync(this.config.arquivos.entrada).isFile()) {
+      throw new Error(`Arquivo de entrada não encontrado: ${this.config.arquivos.entrada}`);
     }
     
     this.adicionarLog('INFO', 'Dependências verificadas', {
-      arquivo: CONFIG.arquivos.entrada,
-      tamanho: fs.statSync(CONFIG.arquivos.entrada).size
+      arquivo: this.config.arquivos.entrada,
+      tamanho: fs.statSync(this.config.arquivos.entrada).size
     });
     console.log('✅ Dependências verificadas');
     console.log(`✅ Banco de marcas carregado: ${Object.keys(this.marcasConhecidas).length} marcas`);
@@ -229,50 +263,31 @@ class ProcessadorEstoqueV4 {
 
   // Cria pasta de saída se não existir
   criarPastaSaida() {
-    if (!fs.existsSync(CONFIG.arquivos.pastaSaida)) {
-      fs.mkdirSync(CONFIG.arquivos.pastaSaida, { recursive: true });
-      this.adicionarLog('INFO', 'Pasta de saída criada', { pasta: CONFIG.arquivos.pastaSaida });
+    if (!fs.existsSync(this.pastaSaida)) {
+      fs.mkdirSync(this.config.arquivos.pastaSaida, { recursive: true });
+      fs.mkdirSync(this.pastaSaida);
+      this.adicionarLog('INFO', 'Pasta de saída criada', { pasta: this.pastaSaida });
     } else {
-      this.adicionarLog('INFO', 'Pasta de saída já existe', { pasta: CONFIG.arquivos.pastaSaida });
+      throw new Error('A pasta temporária já existe; nenhuma exportação foi sobrescrita.');
     }
     console.log('✅ Pasta de saída preparada');
   }
 
   // Lê e processa o arquivo CSV de forma otimizada
-  lerArquivoCSV() {
-    return new Promise((resolve, reject) => {
-      console.log('📖 Lendo arquivo CSV...');
-      
-      const stream = fs.createReadStream(CONFIG.arquivos.entrada)
-        .pipe(csv({ 
-          headers: false, 
-          separator: ',', 
-          strict: false,
-          skipEmptyLines: true,
-          mapValues: ({ value }) => (value ?? '').trim() 
-        }));
-
-      stream.on('data', (row) => {
+  async lerArquivoCSV() {
+    console.log('📖 Lendo arquivo CSV...');
+    const source = fs.createReadStream(this.config.arquivos.entrada);
+    const parser = source.pipe(csv({ headers: false, separator: ',', strict: false,
+      maxRowBytes: 1024 * 1024, mapValues: ({ value }) => (value ?? '').trim() }));
+    source.on('error', (error) => parser.destroy(error));
+    try {
+      for await (const row of parser) {
         this.estatisticas.totalLinhasProcessadas++;
         this.processarLinha(row);
-      });
-
-      stream.on('end', () => {
-        this.adicionarLog('INFO', 'Arquivo CSV processado', {
-          totalLinhas: this.estatisticas.totalLinhasProcessadas,
-          produtosValidos: this.estatisticas.produtosValidos,
-          produtosInvalidos: this.estatisticas.produtosInvalidos,
-          produtosComMarca: this.estatisticas.produtosComMarca,
-          produtosComPeso: this.estatisticas.produtosComPeso
-        });
-        console.log(`✅ Arquivo processado: ${this.estatisticas.totalLinhasProcessadas} linhas`);
-        resolve();
-      });
-
-      stream.on('error', (error) => {
-        reject(error);
-      });
-    });
+      }
+    } finally { source.destroy(); parser.destroy(); }
+    this.adicionarLog('INFO', 'Arquivo CSV processado', { totalLinhas: this.estatisticas.totalLinhasProcessadas });
+    console.log(`✅ Arquivo processado: ${this.estatisticas.totalLinhasProcessadas} linhas`);
   }
 
   // Processa uma linha individual do CSV
@@ -291,6 +306,7 @@ class ProcessadorEstoqueV4 {
       // Localiza índice do cabeçalho
       const indiceHeader = this.encontrarIndiceHeader(colunas);
       if (indiceHeader === -1) return;
+      this.linhasReconhecidas++;
 
       // Extrai dados do produto
       const dadosProduto = this.extrairDadosProduto(colunas, indiceHeader);
@@ -302,6 +318,13 @@ class ProcessadorEstoqueV4 {
         return;
       }
 
+      const skuKey = this.limparSKU(dadosProduto.skuRaw).toLocaleLowerCase('pt-BR');
+      if (skuKey && this.skus.has(skuKey)) {
+        const error = new Error(`SKU duplicado na linha ${this.estatisticas.totalLinhasProcessadas}: ${dadosProduto.skuRaw}`);
+        error.code = 'SKU_DUPLICADO';
+        throw error;
+      }
+      if (skuKey) this.skus.add(skuKey);
       // Cria objeto produto otimizado para WooCommerce
       const produto = this.criarProdutoWooCommerce(dadosProduto, nomeCategoria);
       
@@ -326,6 +349,7 @@ class ProcessadorEstoqueV4 {
       }
 
     } catch (error) {
+      if (error.code === 'SKU_DUPLICADO') throw error;
       this.estatisticas.erros.push({
         linha: this.estatisticas.totalLinhasProcessadas,
         erro: error.message
@@ -359,9 +383,9 @@ class ProcessadorEstoqueV4 {
     return {
       skuRaw: colunas[inicio] || '',
       descricaoRaw: colunas[inicio + 1] || '',
-      estoqueRaw: colunas[inicio + 2] || '0',
+      estoqueRaw: colunas[inicio + 2] || '',
       minimoRaw: colunas[inicio + 3] || '0',
-      precoRaw: colunas[inicio + 4] || '0',
+      precoRaw: colunas[inicio + 4] || '',
       custoRaw: colunas[inicio + 5] || '0'
     };
   }
@@ -373,10 +397,18 @@ class ProcessadorEstoqueV4 {
     const preco = this.converterNumero(dados.precoRaw);
     const custo = this.converterNumero(dados.custoRaw);
 
+    const minimo = this.converterNumero(dados.minimoRaw ?? '0');
+    if (![preco, custo, estoque, minimo].every((value) => Number.isFinite(value) && value >= 0) ||
+        !Number.isSafeInteger(estoque) || !Number.isSafeInteger(minimo) ||
+        [preco, custo].some((value) => !Number.isSafeInteger(Math.round(value * 100)) || Math.abs(value * 100 - Math.round(value * 100)) > 0.000001) ||
+        !this.formatarNomeProduto(dados.descricaoRaw)) {
+      this.adicionarLog('RECUSA', 'Nome, preço, custo ou quantidade inválidos', { linha: this.estatisticas.totalLinhasProcessadas, sku });
+      return false;
+    }
     // Validações básicas
-    if (!sku && CONFIG.validacoes.skuObrigatorio) return false;
-    if (preco < CONFIG.processamento.precoMinimo) return false;
-    if (estoque < CONFIG.processamento.estoqueMinimo && !CONFIG.processamento.incluirProdutosSemEstoque) return false;
+    if (!sku && this.config.validacoes.skuObrigatorio) return false;
+    if (preco < this.config.processamento.precoMinimo) return false;
+    if ((estoque === 0 || estoque < this.config.processamento.estoqueMinimo) && !this.config.processamento.incluirProdutosSemEstoque) return false;
 
     // 🆕 V4.1: Validação de preço vs custo (alerta se preço < custo)
     if (preco > 0 && custo > 0 && preco < custo) {
@@ -407,7 +439,7 @@ class ProcessadorEstoqueV4 {
     const nomeMinusculo = nomeProduto.toLowerCase();
     
     // Procura por cada marca conhecida
-    for (const [chaveBusca, nomeCorreto] of Object.entries(this.marcasConhecidas)) {
+    for (const [chaveBusca, nomeCorreto] of this.marcasOrdenadas) {
       // Busca com word boundary para evitar falsos positivos
       const regex = new RegExp(`\\b${chaveBusca}\\b`, 'i');
       if (regex.test(nomeMinusculo)) {
@@ -421,39 +453,18 @@ class ProcessadorEstoqueV4 {
   // 🎯 MELHORADA V4: Extrai peso do nome do produto (mais preciso)
   extrairPeso(nome) {
     if (!nome) return null;
-    
-    // Padrões de peso em ordem de prioridade
-    const padroes = [
-      /(\d+(?:[,\.]\d+)?)\s*kg/i,           // 10kg, 10.5kg, 10,5kg
-      /(\d+(?:[,\.]\d+)?)\s*k/i,            // 10k
-      /(\d+)\s*quilos?/i,                    // 10 quilo, 10 quilos
-      /(\d+(?:[,\.]\d+)?)\s*g(?!\w)/i,      // 500g (mas não "golden")
-      /(\d+(?:[,\.]\d+)?)\s*gramas?/i,      // 500 grama, 500 gramas
-      /(\d+(?:[,\.]\d+)?)\s*ml/i,           // 500ml
-      /(\d+(?:[,\.]\d+)?)\s*litros?/i,      // 2 litro, 2 litros
-      /(\d+(?:[,\.]\d+)?)\s*l(?!\w)/i       // 2L
-    ];
-    
-    for (const padrao of padroes) {
-      const match = nome.match(padrao);
-      if (match) {
-        let valor = parseFloat(match[1].replace(',', '.'));
-        
-        // Converte tudo para kg
-        if (padrao.source.includes('g(?!') || padrao.source.includes('grama')) {
-          valor = valor / 1000; // gramas para kg
-        } else if (padrao.source.includes('ml') || padrao.source.includes('litro')) {
-          valor = valor / 1000; // ml para litros (aproximação)
-        }
-        
-        // Só retorna se o valor for razoável (entre 0.001kg e 50kg)
-        if (valor > 0.001 && valor <= 50) {
-          return valor.toFixed(3);
-        }
-      }
-    }
-    
-    return null;
+    const match = String(nome).match(/(?<![\p{L}\p{N}.,])(\d+(?:[,.]\d+)?)\s*(kg|quilos?|g|gramas?)\b/iu);
+    if (!match) return null;
+    let value = Number(match[1].replace(',', '.'));
+    if (/^(g|grama)/i.test(match[2])) value /= 1000;
+    return value >= 0.001 && value <= 50 ? value.toFixed(3) : null;
+  }
+
+  extrairConteudo(nome) {
+    const match = String(nome || '').match(/(?<![\p{L}\p{N}.,])(\d+(?:[,.]\d+)?)\s*(ml|litros?|l)\b/iu);
+    if (!match) return '';
+    const value = Number(match[1].replace(',', '.'));
+    return Number.isFinite(value) && value > 0 ? `${value} ${/^ml$/i.test(match[2]) ? 'ml' : 'L'}` : '';
   }
 
   // Formata nome do produto de forma inteligente
@@ -464,17 +475,17 @@ class ProcessadorEstoqueV4 {
     let nome = nomeRaw.replace(/^["']+|["']+$/g, '').trim();
     
     // Converte para Title Case (primeira letra de cada palavra maiúscula)
-    nome = nome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+    nome = nome.normalize('NFC').toLocaleLowerCase('pt-BR').replace(/\p{L}[\p{L}\p{M}]*/gu, word => word[0].toLocaleUpperCase('pt-BR') + word.slice(1));
     
     // Correções específicas para melhor apresentação
     nome = this.aplicarCorrecoesEspecificas(nome);
     
     // Remove caracteres inválidos para WooCommerce
-    nome = nome.replace(/[^\w\s\-.,()&/]/g, '');
+    nome = nome.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
     
     // Limita o tamanho (WooCommerce recomenda até 100 caracteres)
-    if (nome.length > 100) {
-      nome = nome.substring(0, 97) + '...';
+    if (Array.from(nome).length > 100) {
+      nome = Array.from(nome).slice(0, 97).join('') + '...';
     }
     
     return nome;
@@ -541,7 +552,7 @@ class ProcessadorEstoqueV4 {
     categoria = categoria.replace(/_v?\d+$/i, '').trim();
     
     // Converte para Title Case
-    return categoria.toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+    return categoria.normalize('NFC').toLocaleLowerCase('pt-BR').replace(/\p{L}[\p{L}\p{M}]*/gu, word => word[0].toLocaleUpperCase('pt-BR') + word.slice(1));
   }
 
   // Cria objeto produto formatado para WooCommerce
@@ -557,6 +568,7 @@ class ProcessadorEstoqueV4 {
     // 🆕 V4: Detecta marca e peso
     const marcaDetectada = this.detectarMarca(dados.descricaoRaw);
     const pesoDetectado = this.extrairPeso(dados.descricaoRaw);
+    const conteudo = this.extrairConteudo(dados.descricaoRaw);
     
     // Atualiza estatísticas
     if (marcaDetectada) this.estatisticas.produtosComMarca++;
@@ -565,17 +577,17 @@ class ProcessadorEstoqueV4 {
     return {
       SKU: sku,
       Name: nome,
-      Published: (estoque > 0 && CONFIG.woocommerce.publicarAutomaticamente) ? 1 : 0,
+      Published: (estoque > 0 && this.config.woocommerce.publicarAutomaticamente) ? 1 : 0,
       'Is featured?': 0,
-      'Visibility in catalog': CONFIG.woocommerce.visibilidadeCatalogo,
+      'Visibility in catalog': this.config.woocommerce.visibilidadeCatalogo,
       'Short description': this.gerarDescricaoCurta(nome, categoriaFormatada, marcaDetectada),
       Description: this.gerarDescricaoCompleta(nome, categoriaFormatada, preco, marcaDetectada, pesoDetectado),
-      'Tax status': CONFIG.woocommerce.statusTributario,
-      'Tax class': CONFIG.woocommerce.classeImposto,
+      'Tax status': this.config.woocommerce.statusTributario,
+      'Tax class': this.config.woocommerce.classeImposto,
       'In stock?': estoque > 0 ? 1 : 0,
       Stock: estoque,
-      'Backorders allowed?': CONFIG.woocommerce.permitirBackorders ? 1 : 0,
-      'Sold individually?': CONFIG.woocommerce.venderIndividualmente ? 1 : 0,
+      'Backorders allowed?': this.config.woocommerce.permitirBackorders ? 1 : 0,
+      'Sold individually?': this.config.woocommerce.venderIndividualmente ? 1 : 0,
       'Weight (kg)': pesoDetectado || '', // 🆕 V4: Peso detectado automaticamente
       'Regular price': preco,
       'Sale price': '',
@@ -585,8 +597,12 @@ class ProcessadorEstoqueV4 {
       'Attribute 1 name': 'Marca',
       'Attribute 1 value(s)': marcaDetectada || '',
       'Attribute 1 visible': marcaDetectada ? 1 : 0,
-      'Attribute 1 global': 1, // Permite criar taxonomia global de marcas
-      'Allow customer reviews?': CONFIG.woocommerce.permitirAvaliacoes ? 1 : 0,
+      'Attribute 2 name': conteudo ? 'Conteúdo' : '',
+      'Attribute 2 value(s)': conteudo,
+      'Attribute 2 visible': conteudo ? 1 : 0,
+      'Attribute 2 global': 0,
+      'Attribute 1 global': 1, // Atributo global Marca; não é a taxonomia Brands
+      'Allow customer reviews?': this.config.woocommerce.permitirAvaliacoes ? 1 : 0,
       // Campos customizados para controle interno
       'Meta: _custo': custo,
       'Meta: _estoque_minimo': minimo,
@@ -610,6 +626,9 @@ class ProcessadorEstoqueV4 {
 
   // 🆕 V4.1: Gera descrição completa otimizada para SEO
   gerarDescricaoCompleta(nome, categoria, preco, marca, peso) {
+    nome = escaparHtml(nome);
+    categoria = escaparHtml(categoria);
+    marca = marca ? escaparHtml(marca) : null;
     let descricao = `<div class="product-description">\n`;
     descricao += `<h2>${nome}</h2>\n`;
     
@@ -618,13 +637,13 @@ class ProcessadorEstoqueV4 {
     if (marca) {
       intro += `Produto <strong>${marca}</strong> da linha ${categoria}. `;
     } else {
-      intro += `Produto de alta qualidade da categoria ${categoria}. `;
+      intro += `Produto da categoria ${categoria}. `;
     }
     intro += `Disponível na <strong>AquaFlora Agroshop</strong> com `;
     if (peso) {
       intro += `<strong>${peso}kg</strong> e `;
     }
-    intro += `melhor custo-benefício.</p>\n`;
+    intro += `informações de cadastro disponíveis.</p>\n`;
     descricao += intro;
     
     // Lista de características
@@ -636,14 +655,11 @@ class ProcessadorEstoqueV4 {
       descricao += `  <li>⚖️ <strong>Peso/Conteúdo:</strong> ${peso} Kg</li>\n`;
     }
     descricao += `  <li>📦 <strong>Categoria:</strong> ${categoria}</li>\n`;
-    descricao += `  <li>✅ <strong>Produto Original</strong> com garantia</li>\n`;
-    descricao += `  <li>🚚 <strong>Entrega Rápida</strong> para todo o Brasil</li>\n`;
-    descricao += `  <li>💳 <strong>Diversas formas de pagamento</strong></li>\n`;
     descricao += `</ul>\n`;
     
     // Call to Action
     descricao += `<div class="cta-section">\n`;
-    descricao += `<p><strong>💰 Preço promocional:</strong> <span class="price">R$ ${preco}</span></p>\n`;
+    descricao += `<p><strong>💰 Preço informado:</strong> <span class="price">R$ ${preco}</span></p>\n`;
     descricao += `<p>📞 <strong>Dúvidas?</strong> Nossa equipe está pronta para ajudar!</p>\n`;
     descricao += `<p>⭐ <strong>AquaFlora Agroshop</strong> - Sua loja de confiança!</p>\n`;
     descricao += `</div>\n`;
@@ -686,15 +702,15 @@ class ProcessadorEstoqueV4 {
     console.log('\n📝 Gerando arquivos de saída v4.1...');
     this.adicionarLog('INFO', 'Iniciando geração de arquivos de saída');
 
-    if (CONFIG.saida.criarArquivoGeral) {
+    if (this.config.saida.criarArquivoGeral) {
       await this.gerarArquivoGeral();
     }
 
-    if (CONFIG.saida.criarArquivosPorCategoria) {
+    if (this.config.saida.criarArquivosPorCategoria) {
       await this.gerarArquivosPorCategoria();
     }
 
-    if (CONFIG.saida.incluirMetadata) {
+    if (this.config.saida.incluirMetadata) {
       await this.gerarArquivoMetadata();
     }
     
@@ -704,7 +720,7 @@ class ProcessadorEstoqueV4 {
   // Gera arquivo geral com todos os produtos (SEM sufixo _v4)
   async gerarArquivoGeral() {
     const nomeArquivo = this.gerarNomeArquivo('woocommerce_import_TODOS');
-    const caminhoArquivo = path.join(CONFIG.arquivos.pastaSaida, nomeArquivo);
+    const caminhoArquivo = path.join(this.pastaSaida, nomeArquivo);
     
     const csvWriter = createCsvWriter({
       path: caminhoArquivo,
@@ -723,8 +739,12 @@ class ProcessadorEstoqueV4 {
   // Gera arquivos separados por categoria (SEM sufixo _v4)
   async gerarArquivosPorCategoria() {
     for (const [categoria, produtos] of this.categorias.entries()) {
-      const nomeArquivo = this.gerarNomeArquivo(this.criarSlug(categoria));
-      const caminhoArquivo = path.join(CONFIG.arquivos.pastaSaida, nomeArquivo);
+      const suffix = createHash('sha256').update(categoria).digest('hex').slice(0, 16);
+      const nomeArquivo = this.gerarNomeArquivo(`categoria_${this.criarSlug(categoria)}_${suffix}`);
+      const caminhoArquivo = path.join(this.pastaSaida, nomeArquivo);
+      const key = nomeArquivo.toLocaleLowerCase('pt-BR');
+      if (this.nomesCategoria.has(key)) throw new Error('Colisão de arquivos de categoria; exportação não publicada.');
+      this.nomesCategoria.add(key);
       
       const csvWriter = createCsvWriter({
         path: caminhoArquivo,
@@ -752,9 +772,9 @@ class ProcessadorEstoqueV4 {
   // Gera arquivo com metadata e estatísticas
   async gerarArquivoMetadata() {
     const metadata = {
-      versao: '4.1.0',
+      versao: '4.1.1',
       melhorias: [
-        'Detecção automática de marcas (160+ marcas)',
+        'Detecção heurística com 119 aliases de marcas',
         'Extração inteligente de peso do título',
         'Arquivos sem sufixos de versão',
         'Campo de marca no WooCommerce',
@@ -768,14 +788,14 @@ class ProcessadorEstoqueV4 {
       estatisticas: this.estatisticas,
       marcasDetectadas: {
         total: this.estatisticas.produtosComMarca,
-        percentual: ((this.estatisticas.produtosComMarca / this.produtos.length) * 100).toFixed(2) + '%',
+        percentual: percentual(this.estatisticas.produtosComMarca, this.produtos.length) + '%',
         marcasUnicas: [...new Set(this.produtos.map(p => p['Meta: _marca']).filter(Boolean))].sort()
       },
       pesosDetectados: {
         total: this.estatisticas.produtosComPeso,
-        percentual: ((this.estatisticas.produtosComPeso / this.produtos.length) * 100).toFixed(2) + '%'
+        percentual: percentual(this.estatisticas.produtosComPeso, this.produtos.length) + '%'
       },
-      configuracao: CONFIG,
+      configuracao: this.config,
       resumoPorCategoria: Array.from(this.categorias.entries()).map(([categoria, produtos]) => ({
         categoria,
         quantidade: produtos.length,
@@ -786,7 +806,7 @@ class ProcessadorEstoqueV4 {
       }))
     };
 
-    const caminhoArquivo = path.join(CONFIG.arquivos.pastaSaida, 'metadata.json');
+    const caminhoArquivo = path.join(this.pastaSaida, 'metadata.json');
     fs.writeFileSync(caminhoArquivo, JSON.stringify(metadata, null, 2));
     this.adicionarLog('ARQUIVO', 'Arquivo de metadata criado', {
       arquivo: 'metadata.json',
@@ -802,7 +822,7 @@ class ProcessadorEstoqueV4 {
       execucao: {
         dataHora: agora.toISOString(),
         dataHoraBrasil: agora.toLocaleString('pt-BR'),
-        versao: '4.1.0',
+        versao: '4.1.1',
         duracao: ((agora - this.estatisticas.inicioProcessamento) / 1000).toFixed(2) + 's'
       },
       resumo: {
@@ -817,15 +837,15 @@ class ProcessadorEstoqueV4 {
       },
       deteccaoMarcas: {
         total: this.estatisticas.produtosComMarca,
-        percentual: ((this.estatisticas.produtosComMarca / this.estatisticas.produtosValidos) * 100).toFixed(2) + '%',
+        percentual: percentual(this.estatisticas.produtosComMarca, this.estatisticas.produtosValidos) + '%',
         marcasEncontradas: [...new Set(this.produtos.map(p => p['Meta: _marca']).filter(Boolean))].sort(),
         top5Marcas: this.getTopMarcas(5)
       },
       deteccaoPeso: {
         total: this.estatisticas.produtosComPeso,
-        percentual: ((this.estatisticas.produtosComPeso / this.estatisticas.produtosValidos) * 100).toFixed(2) + '%'
+        percentual: percentual(this.estatisticas.produtosComPeso, this.estatisticas.produtosValidos) + '%'
       },
-      configuracao: CONFIG,
+      configuracao: this.config,
       categorias: Array.from(this.categorias.entries()).map(([categoria, produtos]) => ({
         nome: categoria,
         quantidade: produtos.length,
@@ -866,20 +886,19 @@ class ProcessadorEstoqueV4 {
         .map(log => ({
           arquivo: log.detalhes.arquivo,
           tamanho: log.detalhes.tamanho,
-          produtos: log.detalhes.produtos || 'metadata',
+          produtos: log.detalhes.produtos ?? 'metadata',
           produtosComMarca: log.detalhes.produtosComMarca || 0,
           produtosComPeso: log.detalhes.produtosComPeso || 0
         }))
     };
 
     // Salva log detalhado
-    const caminhoLog = path.join(CONFIG.arquivos.pastaSaida, `log_execucao_${agora.toISOString().slice(0, 19).replace(/:/g, '-')}.json`);
+    const caminhoLog = path.join(this.pastaSaida, `log_execucao_${agora.toISOString().slice(0, 19).replace(/:/g, '-')}.json`);
     fs.writeFileSync(caminhoLog, JSON.stringify(logCompleto, null, 2));
     
     // Salva também um log sempre atualizado (último processamento)
-    const caminhoLogAtual = path.join(CONFIG.arquivos.pastaSaida, 'ultimo_processamento.json');
+    const caminhoLogAtual = path.join(this.pastaSaida, 'ultimo_processamento.json');
     fs.writeFileSync(caminhoLogAtual, JSON.stringify(logCompleto, null, 2));
-
     console.log(`✅ Log detalhado salvo: ${path.basename(caminhoLog)}`);
     console.log(`✅ Log atual atualizado: ultimo_processamento.json`);
     
@@ -887,6 +906,16 @@ class ProcessadorEstoqueV4 {
       logDetalhado: caminhoLog,
       logAtual: caminhoLogAtual
     });
+  }
+
+  publicarLogAtual() {
+    const logCompleto = JSON.parse(fs.readFileSync(path.join(this.pastaSaida, 'ultimo_processamento.json'), 'utf8'));
+    const current = path.join(this.config.arquivos.pastaSaida, 'ultimo_processamento.json');
+    const temporary = `${current}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ ...logCompleto, pastaExecucao: this.pastaSaida }, null, 2), { flag: 'wx' });
+    try { fs.renameSync(temporary, current); }
+    catch (error) { fs.unlinkSync(temporary); throw error; }
+
   }
 
   // Calcula top marcas mais frequentes
@@ -932,6 +961,10 @@ class ProcessadorEstoqueV4 {
       { id: 'Attribute 1 value(s)', title: 'Attribute 1 value(s)' },
       { id: 'Attribute 1 visible', title: 'Attribute 1 visible' },
       { id: 'Attribute 1 global', title: 'Attribute 1 global' },
+      { id: 'Attribute 2 name', title: 'Attribute 2 name' },
+      { id: 'Attribute 2 value(s)', title: 'Attribute 2 value(s)' },
+      { id: 'Attribute 2 visible', title: 'Attribute 2 visible' },
+      { id: 'Attribute 2 global', title: 'Attribute 2 global' },
       { id: 'Allow customer reviews?', title: 'Allow customer reviews?' },
       { id: 'Meta: _custo', title: 'Meta: _custo' },
       { id: 'Meta: _estoque_minimo', title: 'Meta: _estoque_minimo' },
@@ -947,12 +980,18 @@ class ProcessadorEstoqueV4 {
 
   // Funções utilitárias
   converterNumero(str) {
-    if (typeof str !== 'string') return 0;
-    return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
+    if (typeof str === 'number') return Number.isFinite(str) ? str : NaN;
+    if (typeof str !== 'string') return NaN;
+    let value = str.trim().replace(/^R\$\s*/, '');
+    if (/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(value)) value = value.replaceAll('.', '').replace(',', '.');
+    else if (/^\d+(?:,\d+)?$/.test(value)) value = value.replace(',', '.');
+    else if (!/^\d+\.\d{1,2}$/.test(value)) return NaN;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : NaN;
   }
 
   limparSKU(sku) {
-    return (sku + '').replace(/\D/g, '');
+    return String(sku ?? '').trim();
   }
 
   criarSlug(str) {
@@ -966,7 +1005,7 @@ class ProcessadorEstoqueV4 {
   }
 
   gerarNomeArquivo(base) {
-    if (CONFIG.saida.formatoData) {
+    if (this.config.saida.formatoData) {
       const agora = new Date();
       const timestamp = agora.toISOString().slice(0, 19).replace(/:/g, '-');
       return `${base}_${timestamp}.csv`;
@@ -985,7 +1024,7 @@ class ProcessadorEstoqueV4 {
   exibirRelatorioFinal() {
     const tempoProcessamento = (new Date() - this.estatisticas.inicioProcessamento) / 1000;
     
-    console.log('\n📊 RELATÓRIO FINAL - VERSÃO 4.1.0');
+    console.log('\n📊 RELATÓRIO FINAL - VERSÃO 4.1.1');
     console.log('='.repeat(70));
     console.log(`⏱️  Tempo de processamento: ${tempoProcessamento.toFixed(2)}s`);
     console.log(`📄 Linhas processadas: ${this.estatisticas.totalLinhasProcessadas}`);
@@ -1027,14 +1066,19 @@ class ProcessadorEstoqueV4 {
       console.log(`   ${categoria}: ${produtos.length} produtos | ${comMarca} c/ marca | ${comPeso} c/ peso | R$ ${valorTotal.toFixed(2)}`);
     });
 
-    console.log('\n🎉 Processamento v4.1.0 concluído com sucesso!');
+    console.log('\n🎉 Processamento v4.1.1 concluído com sucesso!');
   }
 }
 
-// Execução principal
+// Execução principal: a biblioteca não encerra o processo que a importou.
 if (require.main === module) {
-  const processador = new ProcessadorEstoqueV4();
-  processador.processar().catch(console.error);
+  (async () => {
+    const args = process.argv.slice(2);
+    if (args.length && (args.length !== 2 || args[0] !== '--config')) throw new Error('Uso: node processador-estoque-v4.1.js [--config caminho/config.json]');
+    const processador = new ProcessadorEstoqueV4(args.length ? { configPath: args[1] } : {});
+    await processador.processar();
+    console.log(`Arquivos desta execução: ${processador.pastaSaida}`);
+  })().catch((error) => { console.error(`❌ Erro crítico: ${error.message}`); process.exitCode = 1; });
 }
-
 module.exports = ProcessadorEstoqueV4;
+module.exports.carregarConfig = carregarConfig;

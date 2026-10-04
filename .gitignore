@@ -58,3 +58,6 @@ coverage/
 config.local.json
 secrets/
 credentials/
+
+# Configuração ativa e caminhos locais
+config.json

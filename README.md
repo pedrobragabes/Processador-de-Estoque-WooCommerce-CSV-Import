@@ -1,261 +1,127 @@
-# Processador de Estoque WooCommerce v4.1
-
-Athos → WooCommerce CSV Converter
-
-Ferramenta de uso interno para transformar o CSV exportado do Athos ERP em CSV compatível com o importador do WooCommerce, com detecção automática de marcas e extração de peso/volume. Focada em estoque grande (milhares de linhas) e em manter os dados de produto consistentes dentro da loja.
-
----
+# Processador Athos → WooCommerce 4.1.1
+
+Conversor local de uma variante de exportação Athos para CSV WooCommerce.
+A revisão de 04/10/2026 corrige comandos, identidade dos produtos, números, unidades,
+preservação das exportações e leitura dos logs. Não acessa ERP, WordPress ou APIs.
+
+## Instalar e executar
+
+Use Node 22+ e npm 10+. Na pasta do projeto:
+
+    npm ci
+    Copy-Item config.example.json config.json
+    npm start
+    npm run logs
+
+Coloque a exportação em athos.csv ou ajuste arquivos.entrada na configuração.
+O atalho processarEstoque-v4.1.bat executa o arquivo atual e informa falhas corretamente.
+Os atalhos usam a pasta do próprio projeto. Configuração ativa e CSVs são ignorados pelo Git.
+
+Para usar outra pasta de configuração:
 
-## 1. Objetivo
-
-* Ler o CSV padrão do Athos.
-* Normalizar nome, categoria e atributos.
-* Detectar marca com base em tabela interna (160+ marcas).
-* Extrair peso/volume do nome (kg, g, ml, L).
-* Gerar um ou vários CSVs prontos para importar no WooCommerce.
-* Registrar logs e estatísticas de processamento.
+    npm start -- --config "C:\MinhaPasta\config.json"
+    npm run logs -- --config "C:\MinhaPasta\config.json"
+
+Os caminhos de entrada/saída seguem o arquivo de configuração. Importar a classe não
+lê uma configuração nem encerra o processo; a leitura ocorre na construção da instância.
 
----
+## Contrato de entrada
 
-## 2. Principais recursos
+O leitor reconhece a variante do código original: CSV UTF-8, delimitador vírgula,
+campos entre aspas quando necessário e registros com pelo menos 15 células.
+Cada linha de produto contém a célula Valor Custo; as seis células seguintes são:
 
-* Conversão direta Athos → WooCommerce.
-* Detecção de 160+ marcas (pet, aquarismo, veterinária, piscina, pesca, ferramentas, insumos).
-* Extração de peso/volume a partir do título (15kg, 500g, 750ml, 1,5kg, 2L).
-* Validações básicas: preço mínimo, estoque, SKU.
-* Geração de:
+| Posição após o marcador | Campo |
+| --- | --- |
+| 1 | SKU |
+| 2 | Descrição |
+| 3 | Estoque |
+| 4 | Estoque mínimo |
+| 5 | Preço |
+| 6 | Custo |
 
-  * 1 CSV geral com todos os produtos.
-  * CSVs por categoria (opcional).
-  * JSON de metadata (estatísticas).
-  * JSON de log de execução.
-* Inclusão do atributo “Marca” como atributo WooCommerce e como meta.
-* Formatação automática de nomes (Title Case).
-* Compatível com importador nativo do WooCommerce.
+A categoria vem da célula Departamento:nome. Aspas e quebras de linha dentro de campos
+são tratadas pelo parser. Não se presume compatibilidade com outros layouts Athos;
+confira uma amostra autorizada antes de operar. Cada linha tem limite de 1 MiB.
 
----
+- SKU conserva letras, separadores e zeros iniciais. Duplicatas, comparadas sem
+  diferenciar maiúsculas/minúsculas, interrompem a execução antes de publicar arquivos.
+- Números aceitos: 1.234,56; 10,50; 10.50; R$ 1.234,50. Grupos de três dígitos com
+  ponto seguem a convenção brasileira: 1.234 significa 1234.
+- Preço/custo são finitos, não negativos e expressáveis em centavos. Estoque/mínimo
+  são inteiros não negativos. Preço/estoque ausentes ou ilegíveis não viram zero.
+  Nome vazio é recusado.
+- Registros recusados entram na contagem/log. Sem contrato reconhecido ou produto
+  válido, não há exportação. Confira as recusas antes de importar um lote.
+- Limites e inclusão de produtos sem estoque seguem processamento. O exemplo exige
+  SKU; configurações antigas podem manter validacoes.skuObrigatorio como false,
+  mas produtos sem SKU não oferecem identidade confiável para atualizações.
+- Opções/seções antigas ausentes recebem os padrões do exemplo. Booleanos em texto,
+  limites inválidos e caminhos vazios são recusados.
 
-## 3. Requisitos
+## Campos WooCommerce e unidades
 
-* Node.js 18 ou superior.
-* npm (incluso no Node).
-* Sistema operacional: Windows, Linux ou macOS.
-* CSV exportado do Athos no padrão esperado.
+O CSV contém SKU, nome, preço regular, estoque, publicação, categoria, tags e metadados.
+O exemplo gera produtos não publicados. publicarAutomaticamente apenas preenche
+Published: não conecta nem importa no site.
 
----
+Nomes preservam acentos. A descrição HTML escapa textos de origem e usa o preço
+informado, sem inventar promoção, entrega ou garantia.
 
-## 4. Instalação rápida
+A marca é detectada por 119 aliases locais, priorizando nomes mais específicos.
+É heurística e exige revisão. O atributo Marca não implementa a taxonomia WooCommerce Brands.
 
-```bash
-# 1. instalar dependências
-npm install
+kg/g reconhecidos no título são convertidos para Weight (kg). ml/L ficam no atributo
+local Conteúdo. Não se presume densidade para converter volume em massa. Confira
+embalagem, peso de transporte e configuração da loja em kg antes de importar.
 
-# 2. copiar config de exemplo
-# Windows
-copy config.example.json config.json
-# Linux/macOS
-cp config.example.json config.json
-```
+Referência: [schema oficial WooCommerce](https://github.com/woocommerce/woocommerce/wiki/Product-CSV-Import-Schema).
+Confira o mapeamento e as unidades na loja de homologação.
 
----
+## Exportações preservadas
 
-## 5. Configuração (`config.json`)
+Cada execução concluída tem uma pasta exclusiva:
 
-```json
-{
-  "arquivos": {
-    "entrada": "athos.csv",
-    "pastaSaida": "saida_estoque"
-  },
-  "processamento": {
-    "precoMinimo": 0.01,
-    "estoqueMinimo": 0,
-    "incluirProdutosSemEstoque": true
-  },
-  "woocommerce": {
-    "publicarAutomaticamente": false,
-    "permitirAvaliacoes": true,
-    "visibilidadeCatalogo": "visible"
-  },
-  "saida": {
-    "criarArquivoGeral": true,
-    "criarArquivosPorCategoria": true,
-    "incluirMetadata": true,
-    "formatoData": true
-  }
-}
-```
+    saida_estoque/
+    ├── ultimo_processamento.json
+    └── execucao_DATA_IDENTIFICADOR/
+        ├── woocommerce_import_TODOS.csv
+        ├── categoria_NOME_HASH.csv
+        ├── metadata.json
+        ├── log_execucao_DATA.json
+        └── ultimo_processamento.json
 
-Campos relevantes:
+As opções saida controlam os arquivos e os sufixos de data em seus nomes. A pasta
+de execução é sempre exclusiva. Categorias com slug parecido não sobrescrevem arquivos.
+Pasta iniciada por ponto e terminada em .pendente é temporária: uma falha pode deixá-la
+para inspeção; não corresponde a uma exportação concluída.
 
-* `arquivos.entrada`: nome/caminho do CSV do Athos.
-* `arquivos.pastaSaida`: pasta onde ficarão os CSVs gerados.
-* `processamento.precoMinimo`: ignora produtos com preço abaixo disso.
-* `processamento.incluirProdutosSemEstoque`: controla se produtos zerados entram no CSV.
-* `saida.criarArquivosPorCategoria`: se verdadeiro, gera um CSV por categoria do Athos.
+A pasta final só é publicada depois de gerar arquivos/logs. O índice da última execução
+é substituído atomicamente depois disso. Arquivos antigos não são sobrescritos.
+Não é preciso limpar a saída antes de converter outro lote. Arquive/remova manualmente
+uma execução escolhida quando desejar.
 
----
+    npm run logs -- historico 7
+    npm run logs -- arquivo "execucao_DATA_IDENTIFICADOR\log_execucao_DATA.json"
+    npm run logs -- comparar "execucao_A\ultimo_processamento.json" "execucao_B\ultimo_processamento.json"
 
-## 6. Uso
+O visualizador aceita logs antigos na raiz. Arquivos/parâmetros inválidos retornam
+código diferente de zero; não procura arquivos fora da saída configurada.
 
-### Opção 1: Windows (arquivo .bat)
+## Verificação e limites
 
-1. Coloque o `athos.csv` na raiz do projeto (ou ajuste no `config.json`).
-2. Clique em `processarEstoque-v4.1.bat`.
+    npm test
+    npm audit
 
-### Opção 2: Node.js direto
+Vinte e um testes usam dados sintéticos e arquivos temporários próprios, incluindo conversão
+multilinha, reexecução sem sobrescrita, configuração, CLI/npm e logs. A CI roda Node 22
+em Linux e Windows e verifica segredos.
 
-```bash
-node processador-estoque-v4.1.js
-```
+A revisão não importou produtos reais, mediu desempenho em estoque real ou validou
+um layout fornecido pela loja. Faça backup e homologue uma amostra autorizada no WooCommerce
+antes do uso operacional. Produtos variáveis, imagens, sincronização via API e alteração
+automática de preços continuam fora deste conversor local.
 
-O script lê o CSV, processa tudo e cria os arquivos na pasta definida em `saida_estoque/`.
+## Licença
 
----
-
-## 7. Arquivos gerados
-
-Padrão de saída:
-
-```text
-saida_estoque/
-├── woocommerce_import_TODOS_2025-10-16T15-30-00.csv   # todos os produtos
-├── PET_2025-10-16T15-30-00.csv                        # por categoria
-├── AQUARISMO_2025-10-16T15-30-00.csv                  # por categoria
-├── metadata_v4.json                                   # estatísticas do processamento
-├── log_execucao_v4_2025-10-16T15-30-00.json           # log detalhado
-└── ultimo_processamento_v4.json                       # resumo
-```
-
-Descrição:
-
-* `woocommerce_import_TODOS_*.csv`: importar direto em Produtos → Importar (WooCommerce).
-* `[CATEGORIA]_*.csv`: útil quando a loja importa por partes.
-* `metadata_v4.json`: total de linhas, quantas marcas detectadas, quantos pesos extraídos.
-* `log_execucao_v4_*.json`: erros, avisos, linhas ignoradas.
-
----
-
-## 8. Formato do CSV de saída (WooCommerce)
-
-Campos principais gerados:
-
-* `SKU`
-* `Name`
-* `Published`
-* `Regular price`
-* `Stock`
-* `Categories`
-* `Tags`
-* `Attribute 1 name` → `Marca`
-* `Attribute 1 value(s)` → nome da marca detectada
-* Metas internas:
-
-  * `_marca`
-  * `_custo`
-  * `_margem`
-
-Isso permite importar e já ter a marca visível no produto e também guardada como meta.
-
----
-
-## 9. Detecção de marcas
-
-O processador mantém um dicionário interno com mais de 160 marcas, incluindo:
-
-* Pet: Royal Canin, PremieR Pet, Golden, Farmina, Whiskas, Pedigree, Special Dog, Special Cat, Guabi, Equilibrio, Magnus, Fórmula Natural.
-* Aquarismo: Alcon, Tetra, Sera, API, Seachem, Labcon, Ocean Tech, Tropical, Sarlo, Atman, Aquatech.
-* Veterinária: NexGard, Bravecto, Frontline, Drontal, Revolution, Advocate, Seresto, Simparic, Comfortis.
-* Piscina: Genco, Hidroall, HTH, Bel Gard.
-* Pesca e ferramentas: Tramontina, Marine Sports, Maruri, Daiwa, Shimano, Nautika.
-* Insumos/jardim: Forth, Dimy, Vitaplan, Tecnutri, Nutriplan.
-
-Produtos sem marca detectada aparecem no log. Para incluir novas marcas, basta editar a lista no arquivo principal do processador e rodar novamente.
-
----
-
-## 10. Extração de peso/volume
-
-Padrões reconhecidos no nome do produto:
-
-* `15kg`, `1kg`, `1.5kg`, `10,5kg`
-* `500g`, `300g`
-* `750ml`, `1l`, `2l`
-
-O valor é convertido para o campo de peso aceito pelo WooCommerce. Se o padrão não for reconhecido, o processador registra aviso no log.
-
----
-
-## 11. Validação
-
-* Produto sem SKU: marcado no log.
-* Produto com preço abaixo de `processamento.precoMinimo`: marcado no log.
-* Produto sem estoque: incluído ou não conforme configuração.
-* Produto sem marca: marcado no log.
-
-Essas validações não travam o processamento; apenas registram.
-
----
-
-## 12. Problemas comuns
-
-1. Arquivo não encontrado
-
-   * Mensagem: `Erro: arquivo 'athos.csv' não encontrado`.
-   * Causa: CSV não está na raiz ou nome diferente do configurado.
-   * Correção: ajustar `config.json` ou renomear o arquivo.
-
-2. Produtos sem marca
-
-   * Motivo: marca não está na lista interna.
-   * Correção: adicionar a marca à lista de marcas conhecidas e reprocessar.
-
-3. Peso não reconhecido
-
-   * Motivo: formato diferente dos padrões.
-   * Correção: padronizar o nome no Athos ou estender a função de extração.
-
----
-
-## 13. Boas práticas
-
-* Fazer backup do CSV do Athos antes de processar.
-* Testar primeiro com um CSV pequeno.
-* Conferir o `metadata_v4.json` depois do processamento.
-* Importar no WooCommerce primeiro em ambiente de testes quando possível.
-
----
-
-## 14. Estrutura do projeto
-
-```text
-AquaFlora-Estoque/
-├── processador-estoque-v4.1.js   # script principal
-├── processarEstoque-v4.1.bat     # atalho Windows
-├── config.json                   # config ativa
-├── config.example.json           # modelo
-├── visualizar-logs.js            # leitura de logs JSON
-├── saida_estoque/                # saída dos arquivos
-└── README.md
-```
-
----
-
-## 15. Contribuição
-
-* Adicionar novas marcas no arquivo principal.
-* Ajustar regras de peso.
-* Ajustar mapeamento de categorias.
-* Registrar mudanças em `CHANGELOG.md`.
-
-Antes de enviar uma alteração, valide a sintaxe dos dois executáveis:
-
-```powershell
-npm test
-```
-
----
-
-## 16. Licença
-
-MIT. Uso interno AquaFlora Agroshop.
+MIT; texto existente em [LICENSE](LICENSE).

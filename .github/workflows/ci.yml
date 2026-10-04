@@ -9,8 +9,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -18,6 +22,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --audit-level=low
       - run: npm test
+
+  test:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirmar os dois ambientes
+        env:
+          MATRIX_RESULT: ${{ needs.validate.result }}
+        run: test "$MATRIX_RESULT" = "success"
 
