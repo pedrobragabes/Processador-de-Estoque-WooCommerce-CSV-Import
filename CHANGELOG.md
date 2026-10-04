@@ -5,6 +5,25 @@ Todas as mudanças notáveis do projeto Processador de Estoque v4.1 estão docum
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [4.1.1] - 2026-10-04
+
+### Corrigido
+
+- CLI/npm/atalhos apontam para o arquivo atual e retornam falha corretamente.
+- SKU e acentos preservados; números inválidos recusados; volume separado da massa.
+- Exclusão de estoque zero funciona; duplicatas interrompem a conversão.
+- Categorias com slugs parecidos não sobrescrevem arquivos.
+- Cada execução é publicada em pasta exclusiva após concluir arquivos/logs.
+  Índice de log substituído atomicamente; arquivos anteriores preservados.
+- Descrições escapam dados de origem e removem condições comerciais sem evidência.
+- Visualizador compatível com os campos gerados e logs históricos.
+- Guia de contribuição reparado e contrato de entrada documentado.
+- Vinte e um testes sintéticos de comportamento e CI Linux/Windows Node 22.
+
+Importação na loja e desempenho real permanecem sem validação nesta revisão.
+Os números históricos abaixo são relatos anteriores, não medições novas.
+A lista atual contém 119 aliases heurísticos de marcas.
+
 ## [4.1.0] - 2025-10-16
 
 ### Adicionado

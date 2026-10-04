@@ -1,228 +1,103 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
+const { carregarConfig } = require('./processador-estoque-v4.1.js');
 
 class VisualizadorLogs {
-  constructor() {
-    this.pastaSaida = 'saida_estoque';
+  constructor({ configPath = path.resolve('config.json') } = {}) {
+    this.pastaSaida = fs.existsSync(configPath) ? carregarConfig(path.resolve(configPath)).arquivos.pastaSaida : path.resolve('saida_estoque');
   }
 
-  // Função principal
-  exibirLogs() {
-    console.log('📋 VISUALIZADOR DE LOGS - ÚLTIMA EXECUÇÃO\n');
-    
-    try {
-      this.exibirUltimoProcessamento();
-      this.listarLogsDisponiveis();
-    } catch (error) {
-      console.error('❌ Erro ao carregar logs:', error.message);
+  lerLog(filename) {
+    const absolute = path.resolve(this.pastaSaida, filename);
+    const relative = path.relative(this.pastaSaida, absolute);
+    if (relative.startsWith('..') || path.isAbsolute(relative) || !absolute.endsWith('.json')) throw new Error('Escolha um JSON dentro da pasta de saída.');
+    const log = JSON.parse(fs.readFileSync(absolute, 'utf8'));
+    if (!log || !log.resumo || typeof log.resumo !== 'object' || !log.execucao) throw new Error('Formato de log não reconhecido.');
+    return log;
+  }
+
+  arquivosDisponiveis() {
+    if (!fs.existsSync(this.pastaSaida)) return [];
+    const entries = fs.readdirSync(this.pastaSaida, { withFileTypes: true });
+    const names = [];
+    for (const entry of entries) {
+      if (entry.isFile() && /^log_execucao_.*\.json$/.test(entry.name)) names.push(entry.name);
+      if (entry.isDirectory() && entry.name.startsWith('execucao_')) {
+        for (const file of fs.readdirSync(path.join(this.pastaSaida, entry.name), { withFileTypes: true })) {
+          if (file.isFile() && /^log_execucao_.*\.json$/.test(file.name)) names.push(path.join(entry.name, file.name));
+        }
+      }
     }
+    return names.map((arquivo) => ({ arquivo, data: fs.statSync(path.join(this.pastaSaida, arquivo)).mtime })).sort((a, b) => b.data - a.data);
   }
 
-  // Exibe o último processamento
+  exibirDetalhesLog(log) {
+    console.log('📋 PROCESSAMENTO', log.execucao.versao);
+    console.log('Data:', log.execucao.dataHoraBrasil || log.execucao.dataHora, '; duração:', log.execucao.duracao);
+    console.log('Linhas:', log.resumo.totalLinhasProcessadas, '; válidos:', log.resumo.produtosValidos, '; inválidos:', log.resumo.produtosInvalidos, '; erros:', log.resumo.totalErros);
+    if (log.pastaExecucao) console.log('Arquivos:', log.pastaExecucao);
+    for (const categoria of Array.isArray(log.categorias) ? log.categorias : []) {
+      console.log(' ', categoria.nome, ':', categoria.quantidade, 'produtos; R$', categoria.valorTotal);
+    }
+    for (const file of Array.isArray(log.arquivosGerados) ? log.arquivosGerados : []) {
+      console.log(' ', file.arquivo, ':', file.produtos, ';', file.tamanho, 'bytes');
+    }
+    for (const error of (Array.isArray(log.erros) ? log.erros : []).slice(0, 5)) console.log('  Linha', error.linha, ':', error.erro);
+  }
+
   exibirUltimoProcessamento() {
-    const arquivoLog = path.join(this.pastaSaida, 'ultimo_processamento.json');
-    
-    if (!fs.existsSync(arquivoLog)) {
-      console.log('⚠️  Nenhum log de processamento encontrado.');
-      console.log('   Execute o processador v3 primeiro.\n');
+    if (!fs.existsSync(path.join(this.pastaSaida, 'ultimo_processamento.json'))) {
+      console.log('Nenhum processamento concluído. Execute o processador v4.1.1.');
       return;
     }
-
-    const log = JSON.parse(fs.readFileSync(arquivoLog, 'utf8'));
-    
-    console.log('🕐 ÚLTIMO PROCESSAMENTO');
-    console.log('='.repeat(50));
-    console.log(`📅 Data/Hora: ${log.execucao.dataHoraBrasil}`);
-    console.log(`⏱️  Duração: ${log.execucao.duracao}`);
-    console.log(`📊 Versão: ${log.execucao.versao}`);
-    
-    console.log('\n📈 RESUMO ESTATÍSTICO:');
-    console.log(`   📄 Linhas processadas: ${log.resumo.totalLinhasProcessadas.toLocaleString()}`);
-    console.log(`   ✅ Produtos válidos: ${log.resumo.produtosValidos.toLocaleString()}`);
-    console.log(`   ❌ Produtos inválidos: ${log.resumo.produtosInvalidos}`);
-    console.log(`   📦 Sem estoque: ${log.resumo.produtosSemEstoque.toLocaleString()}`);
-    console.log(`   🏷️  Categorias: ${log.resumo.totalCategorias}`);
-    console.log(`   ⚠️  Erros: ${log.resumo.totalErros}`);
-
-    console.log('\n🏷️  CATEGORIAS PROCESSADAS:');
-    log.categorias
-      .sort((a, b) => b.quantidade - a.quantidade)
-      .forEach(cat => {
-        console.log(`   ${cat.nome}: ${cat.quantidade} produtos (R$ ${cat.valorTotal}) | Com estoque: ${cat.produtosComEstoque}`);
-      });
-
-    console.log('\n💰 TOP 5 PRODUTOS MAIS CAROS:');
-    log.amostrasProcessamento.produtos5MaisCaros.forEach((produto, index) => {
-      console.log(`   ${index + 1}. ${produto.nome} - R$ ${produto.preco} (${produto.categoria}) - Estoque: ${produto.estoque}`);
-    });
-
-    console.log('\n📦 TOP 5 PRODUTOS COM MAIOR ESTOQUE:');
-    log.amostrasProcessamento.produtosMaiorEstoque.forEach((produto, index) => {
-      console.log(`   ${index + 1}. ${produto.nome} - ${produto.estoque} unidades (${produto.categoria}) - R$ ${produto.preco}`);
-    });
-
-    console.log('\n📁 ARQUIVOS GERADOS:');
-    log.arquivosGerados.forEach(arquivo => {
-      const tamanhoMB = (arquivo.tamanho / 1024 / 1024).toFixed(2);
-      console.log(`   ✅ ${arquivo.arquivo} (${tamanhoMB} MB) - ${arquivo.produtos}`);
-    });
-
-    if (log.erros && log.erros.length > 0) {
-      console.log('\n⚠️  ERROS ENCONTRADOS:');
-      log.erros.slice(0, 5).forEach(erro => {
-        console.log(`   Linha ${erro.linha}: ${erro.erro}`);
-      });
-      if (log.erros.length > 5) {
-        console.log(`   ... e mais ${log.erros.length - 5} erros`);
-      }
-    }
-
-    console.log('\n🎯 CONFIGURAÇÃO USADA:');
-    console.log(`   Incluir sem estoque: ${log.configuracao.processamento.incluirProdutosSemEstoque ? 'Sim' : 'Não'}`);
-    console.log(`   Preço mínimo: R$ ${log.configuracao.processamento.precoMinimo}`);
-    console.log(`   Validar SKU: ${log.configuracao.validacoes.skuObrigatorio ? 'Sim' : 'Não'}`);
-    console.log(`   Publicar automaticamente: ${log.configuracao.woocommerce.publicarAutomaticamente ? 'Sim' : 'Não'}`);
+    this.exibirDetalhesLog(this.lerLog('ultimo_processamento.json'));
   }
 
-  // Lista todos os logs disponíveis
   listarLogsDisponiveis() {
-    console.log('\n📂 LOGS DISPONÍVEIS:');
-    console.log('='.repeat(30));
-    
-    if (!fs.existsSync(this.pastaSaida)) {
-      console.log('   Pasta de saída não encontrada');
-      return;
-    }
-
-    const arquivos = fs.readdirSync(this.pastaSaida)
-      .filter(arquivo => arquivo.startsWith('log_execucao_') && arquivo.endsWith('.json'))
-      .sort()
-      .reverse(); // Mais recentes primeiro
-
-    if (arquivos.length === 0) {
-      console.log('   Nenhum log de execução encontrado');
-      return;
-    }
-
-    console.log(`   📋 ${arquivos.length} execuções registradas:`);
-    arquivos.slice(0, 10).forEach((arquivo, index) => {
-      const stats = fs.statSync(path.join(this.pastaSaida, arquivo));
-      const data = stats.mtime.toLocaleString('pt-BR');
-      console.log(`   ${index + 1}. ${arquivo} (${data})`);
-    });
-
-    if (arquivos.length > 10) {
-      console.log(`   ... e mais ${arquivos.length - 10} logs antigos`);
-    }
+    const files = this.arquivosDisponiveis();
+    console.log('📂', files.length, 'logs disponíveis');
+    for (const file of files.slice(0, 10)) console.log(' ', file.arquivo, file.data.toLocaleString('pt-BR'));
   }
 
-  // Exibe log específico
-  exibirLogEspecifico(nomeArquivo) {
-    const caminhoArquivo = path.join(this.pastaSaida, nomeArquivo);
-    
-    if (!fs.existsSync(caminhoArquivo)) {
-      console.log(`❌ Arquivo não encontrado: ${nomeArquivo}`);
-      return;
-    }
+  exibirLogs() { this.exibirUltimoProcessamento(); this.listarLogsDisponiveis(); }
+  exibirLogEspecifico(filename) { this.exibirDetalhesLog(this.lerLog(filename)); }
 
-    const log = JSON.parse(fs.readFileSync(caminhoArquivo, 'utf8'));
-    
-    console.log(`📋 LOG ESPECÍFICO: ${nomeArquivo}\n`);
-    this.exibirDetalhesLog(log);
-  }
-
-  // Exibe logs resumidos dos últimos dias
   exibirHistorico(dias = 7) {
-    console.log(`\n📊 HISTÓRICO DOS ÚLTIMOS ${dias} DIAS:`);
-    console.log('='.repeat(40));
-    
-    const agora = new Date();
-    const limiteData = new Date(agora.getTime() - (dias * 24 * 60 * 60 * 1000));
-    
-    const arquivosRecentes = fs.readdirSync(this.pastaSaida)
-      .filter(arquivo => arquivo.startsWith('log_execucao_') && arquivo.endsWith('.json'))
-      .map(arquivo => {
-        const stats = fs.statSync(path.join(this.pastaSaida, arquivo));
-        return { arquivo, data: stats.mtime };
-      })
-      .filter(item => item.data >= limiteData)
-      .sort((a, b) => b.data - a.data);
-
-    if (arquivosRecentes.length === 0) {
-      console.log(`   Nenhuma execução nos últimos ${dias} dias`);
-      return;
+    if (!Number.isInteger(dias) || dias < 1 || dias > 3650) throw new Error('Informe de 1 a 3650 dias.');
+    const limit = Date.now() - dias * 86400000;
+    const files = this.arquivosDisponiveis().filter((file) => file.data.getTime() >= limit);
+    console.log('📊', files.length, 'execuções nos últimos', dias, 'dias');
+    for (const file of files) {
+      console.log(file.arquivo);
+      try { this.exibirDetalhesLog(this.lerLog(file.arquivo)); }
+      catch (error) { console.log('Log indisponível:', error.message); }
     }
-
-    console.log(`   📈 ${arquivosRecentes.length} execuções encontradas:\n`);
-    
-    arquivosRecentes.forEach((item, index) => {
-      try {
-        const log = JSON.parse(fs.readFileSync(path.join(this.pastaSaida, item.arquivo), 'utf8'));
-        console.log(`   ${index + 1}. ${item.data.toLocaleString('pt-BR')}`);
-        console.log(`      ✅ ${log.resumo.produtosValidos} produtos válidos`);
-        console.log(`      ❌ ${log.resumo.produtosInvalidos} inválidos`);
-        console.log(`      ⏱️  ${log.execucao.duracao}`);
-        console.log('');
-      } catch (error) {
-        console.log(`   ${index + 1}. ${item.data.toLocaleString('pt-BR')} - Erro ao ler log`);
-      }
-    });
   }
 
-  // Compara duas execuções
-  compararExecucoes(arquivo1, arquivo2) {
-    console.log('🔍 COMPARAÇÃO DE EXECUÇÕES\n');
-    
-    try {
-      const log1 = JSON.parse(fs.readFileSync(path.join(this.pastaSaida, arquivo1), 'utf8'));
-      const log2 = JSON.parse(fs.readFileSync(path.join(this.pastaSaida, arquivo2), 'utf8'));
-      
-      console.log(`📊 COMPARAÇÃO:`);
-      console.log(`   ${arquivo1} vs ${arquivo2}\n`);
-      
-      console.log('📈 ESTATÍSTICAS:');
-      console.log(`   Produtos válidos: ${log1.resumo.produtosValidos} → ${log2.resumo.produtosValidos} (${log2.resumo.produtosValidos - log1.resumo.produtosValidos >= 0 ? '+' : ''}${log2.resumo.produtosValidos - log1.resumo.produtosValidos})`);
-      console.log(`   Produtos inválidos: ${log1.resumo.produtosInvalidos} → ${log2.resumo.produtosInvalidos} (${log2.resumo.produtosInvalidos - log1.resumo.produtosInvalidos >= 0 ? '+' : ''}${log2.resumo.produtosInvalidos - log1.resumo.produtosInvalidos})`);
-      console.log(`   Categorias: ${log1.resumo.totalCategorias} → ${log2.resumo.totalCategorias} (${log2.resumo.totalCategorias - log1.resumo.totalCategorias >= 0 ? '+' : ''}${log2.resumo.totalCategorias - log1.resumo.totalCategorias})`);
-      
-    } catch (error) {
-      console.log(`❌ Erro ao comparar: ${error.message}`);
+  compararExecucoes(first, second) {
+    const a = this.lerLog(first), b = this.lerLog(second);
+    console.log('🔍', first, '→', second);
+    for (const key of ['produtosValidos', 'produtosInvalidos', 'totalCategorias']) {
+      console.log(key, ':', a.resumo[key], '→', b.resumo[key]);
     }
   }
 }
 
-// Execução principal
 if (require.main === module) {
-  const visualizador = new VisualizadorLogs();
-  
-  const args = process.argv.slice(2);
-  const comando = args[0];
-  
-  switch (comando) {
-    case 'historico':
-      const dias = parseInt(args[1]) || 7;
-      visualizador.exibirHistorico(dias);
-      break;
-    case 'arquivo':
-      const arquivo = args[1];
-      if (arquivo) {
-        visualizador.exibirLogEspecifico(arquivo);
-      } else {
-        console.log('❌ Especifique o nome do arquivo');
-      }
-      break;
-    case 'comparar':
-      const arq1 = args[1];
-      const arq2 = args[2];
-      if (arq1 && arq2) {
-        visualizador.compararExecucoes(arq1, arq2);
-      } else {
-        console.log('❌ Especifique dois arquivos para comparar');
-      }
-      break;
-    default:
-      visualizador.exibirLogs();
-  }
+  try {
+    const args = process.argv.slice(2);
+    const index = args.indexOf('--config');
+    let configPath;
+    if (index !== -1) {
+      if (!args[index + 1]) throw new Error('Informe o caminho depois de --config.');
+      configPath = args[index + 1]; args.splice(index, 2);
+    }
+    const viewer = new VisualizadorLogs(configPath ? { configPath } : {});
+    if (!args.length) viewer.exibirLogs();
+    else if (args[0] === 'historico' && args.length <= 2) viewer.exibirHistorico(args[1] === undefined ? 7 : Number(args[1]));
+    else if (args[0] === 'arquivo' && args.length === 2) viewer.exibirLogEspecifico(args[1]);
+    else if (args[0] === 'comparar' && args.length === 3) viewer.compararExecucoes(args[1], args[2]);
+    else throw new Error('Uso: visualizar-logs.js [historico dias | arquivo nome.json | comparar primeiro.json segundo.json] [--config caminho]');
+  } catch (error) { console.error('❌ Erro ao carregar logs:', error.message); process.exitCode = 1; }
 }
-
 module.exports = VisualizadorLogs;

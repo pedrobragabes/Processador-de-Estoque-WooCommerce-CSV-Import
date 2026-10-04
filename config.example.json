@@ -9,7 +9,7 @@
     "incluirProdutosSemEstoque": true
   },
   "validacoes": {
-    "skuObrigatorio": false
+    "skuObrigatorio": true
   },
   "woocommerce": {
     "publicarAutomaticamente": false,
