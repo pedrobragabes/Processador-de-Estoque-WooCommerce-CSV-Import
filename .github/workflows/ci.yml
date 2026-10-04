@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  validate:
     strategy:
       fail-fast: false
       matrix:
@@ -24,4 +24,14 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=low
       - run: npm test
+
+  test:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirmar os dois ambientes
+        env:
+          MATRIX_RESULT: ${{ needs.validate.result }}
+        run: test "$MATRIX_RESULT" = "success"
 
